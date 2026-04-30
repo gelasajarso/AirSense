@@ -23,6 +23,7 @@ from ..data.schemas import (
     PipelineStatus,
 )
 from ..data.time_analysis import TimeBasedAnalyzer
+from ..data.validator import DataValidator
 from ..models.simple_forecasting import SimpleForecaster
 
 # Get settings and logger
@@ -51,6 +52,16 @@ async def get_data_processor(request: Request):
     
     return app.state.data_processor
 
+async def get_validator(request: Request):
+    """Get data validator from app state."""
+    app = request.app
+    
+    if not hasattr(app.state, 'validator'):
+        # Initialize validator if not present
+        app.state.validator = DataValidator()
+    
+    return app.state.validator
+
 
 @router.get("/data", response_model=dict)
 async def get_data(
@@ -58,9 +69,11 @@ async def get_data(
     start_date: Optional[datetime] = Query(None),
     end_date: Optional[datetime] = Query(None),
     pollutants: Optional[List[str]] = Query(None),
-    processor=Depends(get_data_processor)
+    validate: bool = Query(False, description="Run data validation"),
+    processor=Depends(get_data_processor),
+    validator=Depends(get_validator)
 ):
-    """Get air quality data with filtering."""
+    """Get air quality data with filtering and optional validation."""
     try:
         # Get latest processed data
         processed_dir = settings.processed_data_dir
@@ -76,6 +89,13 @@ async def get_data(
         
         latest_file = sorted(parquet_files)[-1]
         df = pd.read_parquet(os.path.join(processed_dir, latest_file))
+        
+        # Validate data if requested
+        validation_report = None
+        if validate:
+            validation_report = validator.validate_dataframe(df)
+            if validation_report["has_critical_issues"]:
+                logger.warning("Data validation found critical issues", **validation_report)
         
         # Apply filters
         if start_date:
@@ -95,12 +115,18 @@ async def get_data(
             df = df.tail(limit)
         
         # Convert to dict
-        return {
+        response = {
             "data": df.to_dict('records'),
             "count": len(df),
             "columns": list(df.columns),
             "source_file": latest_file
         }
+        
+        # Add validation report if requested
+        if validation_report:
+            response["validation"] = validation_report
+        
+        return response
         
     except HTTPException:
         raise
@@ -318,12 +344,14 @@ async def list_models(forecaster=Depends(get_forecaster)):
 @router.post("/pipeline/run", response_model=PipelineStatus)
 async def run_pipeline(
     background_tasks: BackgroundTasks,
-    processor=Depends(get_data_processor)
+    validate_data: bool = Query(True, description="Validate data after processing"),
+    processor=Depends(get_data_processor),
+    validator=Depends(get_validator)
 ):
-    """Run the data processing pipeline."""
+    """Run the data processing pipeline with optional validation."""
     try:
         # Add pipeline execution to background tasks
-        background_tasks.add_task(_run_pipeline_task, processor)
+        background_tasks.add_task(_run_pipeline_task, processor, validator, validate_data)
         
         return PipelineStatus(
             status="running",
@@ -338,8 +366,8 @@ async def run_pipeline(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def _run_pipeline_task(processor):
-    """Background task to run pipeline."""
+async def _run_pipeline_task(processor, validator, validate_data=True):
+    """Background task to run pipeline with validation."""
     try:
         logger.info("Starting pipeline execution in background")
         
@@ -359,6 +387,20 @@ async def _run_pipeline_task(processor):
         
         # Run pipeline
         result = processor.process_pipeline(input_file, output_path)
+        
+        # Validate processed data if requested
+        if validate_data:
+            try:
+                df = pd.read_parquet(output_path)
+                validation_report = validator.validate_dataframe(df)
+                
+                if validation_report["has_critical_issues"]:
+                    logger.warning("Pipeline produced data with critical issues", **validation_report)
+                else:
+                    logger.info("Pipeline data validation passed", **validation_report)
+                    
+            except Exception as e:
+                logger.error(f"Data validation failed: {e}")
         
         logger.info("Pipeline completed", **result)
         
@@ -609,4 +651,43 @@ async def temporal_correlations(
         raise
     except Exception as e:
         logger.error(f"Temporal correlation analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/validate")
+async def validate_data(
+    file_path: Optional[str] = Query(None, description="Path to file to validate, or latest if not provided"),
+    validator=Depends(get_validator)
+):
+    """Validate air quality data and return comprehensive report."""
+    try:
+        # Get file to validate
+        if file_path:
+            if not os.path.exists(file_path):
+                raise HTTPException(status_code=404, detail=f"File not found: {file_path}")
+            df = pd.read_parquet(file_path) if file_path.endswith('.parquet') else pd.read_csv(file_path)
+        else:
+            # Use latest processed file
+            processed_dir = settings.processed_data_dir
+            parquet_files = [f for f in os.listdir(processed_dir) if f.endswith('.parquet')]
+            if not parquet_files:
+                raise HTTPException(status_code=404, detail="No processed data available")
+            
+            latest_file = sorted(parquet_files)[-1]
+            file_path = os.path.join(processed_dir, latest_file)
+            df = pd.read_parquet(file_path)
+        
+        # Run comprehensive validation
+        validation_report = validator.validate_dataframe(df)
+        
+        return {
+            "file_path": file_path,
+            "validation_report": validation_report,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Data validation failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))

@@ -115,8 +115,8 @@ def run_all():
     
     # Run pipeline first
     if not run_pipeline():
-        logger.error("Pipeline failed, aborting startup")
-        return False
+        logger.warning("Pipeline failed, continuing without data processing")
+        # return False  # Commented out to allow running without Java
     
     # Start API in background thread
     api_thread = threading.Thread(target=run_api, daemon=True)

@@ -284,6 +284,7 @@ class LSTMModel(BaseModel):
         self.lstm_units = lstm_units
         self.scaler = StandardScaler()
         self.history = None
+        self.last_sequence = None  # Store last sequence for forecasting
     
     @log_performance
     def train(self, data: pd.Series, epochs: int = 50, batch_size: int = 32,
@@ -301,6 +302,9 @@ class LSTMModel(BaseModel):
             # Prepare data
             scaled_data = self.scaler.fit_transform(data.values.reshape(-1, 1))
             X, y = self._create_sequences(scaled_data)
+            
+            # Store the last sequence for future forecasting
+            self.last_sequence = scaled_data[-self.sequence_length:].reshape(1, self.sequence_length, 1)
             
             # Split data
             split_idx = int(len(X) * (1 - validation_split))
@@ -382,30 +386,41 @@ class LSTMModel(BaseModel):
         
         return model
     
-    def forecast(self, steps: int, **kwargs) -> np.ndarray:
-        """Generate multi-step forecasts."""
+    def forecast(self, steps: int, last_sequence: Optional[np.ndarray] = None, **kwargs) -> np.ndarray:
+        """Generate multi-step forecasts.
+        
+        Args:
+            steps: Number of steps to forecast
+            last_sequence: Optional last sequence to use for forecasting. If None, uses stored last_sequence
+            **kwargs: Additional arguments
+            
+        Returns:
+            Array of forecasted values
+        """
         if not self.is_trained:
             raise ModelError("LSTM model is not trained")
         
         try:
-            # Get the last sequence from training data
-            # Note: In practice, you'd want to store the last sequence during training
-            # For now, we'll generate forecasts recursively
+            # Use provided sequence or stored last sequence
+            if last_sequence is not None:
+                current_sequence = last_sequence.reshape(1, self.sequence_length, 1)
+            elif self.last_sequence is not None:
+                current_sequence = self.last_sequence.copy()
+            else:
+                raise ModelError("No sequence available for forecasting. Provide last_sequence or train the model first.")
+            
             forecasts = []
             
-            # Start with the last known sequence (simplified approach)
-            # In production, you'd maintain the last sequence
-            current_sequence = np.random.randn(1, self.sequence_length, 1)  # Placeholder
-            
+            # Generate forecasts recursively
             for _ in range(steps):
                 pred = self.model.predict(current_sequence, verbose=0)
                 forecasts.append(pred[0, 0])
                 
-                # Update sequence
+                # Update sequence: shift left and add new prediction
                 current_sequence = np.roll(current_sequence, -1, axis=1)
                 current_sequence[0, -1, 0] = pred[0, 0]
             
-            # Inverse transform
+            # Inverse transform to original scale
             forecasts = np.array(forecasts).reshape(-1, 1)
             forecasts = self.scaler.inverse_transform(forecasts).flatten()
             
@@ -426,12 +441,13 @@ class LSTMModel(BaseModel):
             model_path = path.replace('.pkl', '.h5')
             self.model.save(model_path)
             
-            # Save scaler and metadata
+            # Save scaler, metadata, and last sequence
             additional_data = {
                 "scaler": self.scaler,
                 "metadata": self.metadata,
                 "name": self.name,
-                "sequence_length": self.sequence_length
+                "sequence_length": self.sequence_length,
+                "last_sequence": self.last_sequence
             }
             joblib.dump(additional_data, path)
             
@@ -450,6 +466,7 @@ class LSTMModel(BaseModel):
             self.metadata = additional_data["metadata"]
             self.name = additional_data["name"]
             self.sequence_length = additional_data["sequence_length"]
+            self.last_sequence = additional_data.get("last_sequence", None)
             
             # Load model
             model_path = path.replace('.pkl', '.h5')

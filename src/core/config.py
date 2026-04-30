@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     # Database (future)
     database_url: Optional[str] = Field(default=None, env="DATABASE_URL")
     
+    # Redis
+    redis_url: Optional[str] = Field(default=None, env="REDIS_URL")
+    
     # ML configuration
     default_forecast_steps: int = Field(default=24, env="DEFAULT_FORECAST_STEPS")
     model_retrain_interval: int = Field(default=24, env="MODEL_RETRAIN_INTERVAL")  # hours
