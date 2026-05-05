@@ -1,4 +1,6 @@
-"""name=app.py
+"""
+AirSense Dashboard - Integrated with API
+Production-ready dashboard with real data from API
 """
 import streamlit as st
 import pandas as pd
@@ -6,372 +8,671 @@ import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+import requests
+from typing import Dict, List, Optional
+import json
 
+# Page configuration
 st.set_page_config(
-    page_title="AirSense Dashboard",
+    page_title="AirSense - Air Quality Monitoring",
     page_icon="🌤️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# -----------------------
-# Custom CSS (embedded)
-# -----------------------
+# API Configuration
+API_BASE_URL = "http://localhost:8000"
+API_TIMEOUT = 30
+
+# Custom CSS
 CSS = """
-:root{
-  --bg: #f6f8fb;
+<style>
+:root {
+  --primary: #2575fc;
+  --secondary: #6a11cb;
+  --success: #10b981;
+  --warning: #f59e0b;
+  --danger: #ef4444;
+  --bg: #f8fafc;
   --card-bg: #ffffff;
-  --muted: #6b7280;
-  --accent: linear-gradient(90deg, #6a11cb 0%, #2575fc 100%);
-  --shadow: 0 6px 18px rgba(28, 32, 38, 0.08);
-  --radius: 12px;
-  --glass: rgba(255,255,255,0.6);
+  --text: #1e293b;
+  --text-muted: #64748b;
+  --border: #e2e8f0;
+  --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
 }
 
-/* Dark theme support */
-@media (prefers-color-scheme: dark) {
-  :root{
-    --bg: #0b1020;
-    --card-bg: #0f1724;
-    --muted: #9aa4b2;
-    --shadow: 0 6px 18px rgba(2,6,23,0.6);
-    --glass: rgba(255,255,255,0.02);
-  }
-}
-
-[data-testid="stSidebar"] > div:first-child {
-  padding-top: 1rem;
-}
-
-/* Page background and container */
-.css-1lcbmhc {  /* main app container class can vary; we set body background generically */
-  background: var(--bg) !important;
-}
-
-/* Cards */
-.card {
-  background: var(--card-bg);
-  border-radius: var(--radius);
-  padding: 18px;
+.main-header {
+  background: linear-gradient(135deg, var(--secondary) 0%, var(--primary) 100%);
+  color: white;
+  padding: 2rem;
+  border-radius: 12px;
+  margin-bottom: 2rem;
   box-shadow: var(--shadow);
-  margin-bottom: 18px;
 }
 
-/* KPI small card */
-.kpi {
-  padding: 14px;
-  border-radius: calc(var(--radius) - 4px);
-  background: linear-gradient(180deg, rgba(255,255,255,0.6), rgba(255,255,255,0.4));
-  text-align: left;
-}
-
-/* Title / header */
-.header {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.header h1 {
+.main-header h1 {
   margin: 0;
-  font-size: 1.35rem;
+  font-size: 2rem;
+  font-weight: 700;
 }
 
-/* Gradient button */
+.main-header p {
+  margin: 0.5rem 0 0 0;
+  opacity: 0.9;
+}
+
+.metric-card {
+  background: var(--card-bg);
+  border-radius: 12px;
+  padding: 1.5rem;
+  box-shadow: var(--shadow);
+  border-left: 4px solid var(--primary);
+}
+
+.aqi-good { border-left-color: var(--success); }
+.aqi-moderate { border-left-color: var(--warning); }
+.aqi-unhealthy { border-left-color: var(--danger); }
+
+.status-badge {
+  display: inline-block;
+  padding: 0.25rem 0.75rem;
+  border-radius: 9999px;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.status-good { background: #d1fae5; color: #065f46; }
+.status-moderate { background: #fef3c7; color: #92400e; }
+.status-unhealthy { background: #fee2e2; color: #991b1b; }
+
+.info-box {
+  background: #eff6ff;
+  border-left: 4px solid #3b82f6;
+  padding: 1rem;
+  border-radius: 8px;
+  margin: 1rem 0;
+}
+
 .stButton>button {
-  background: var(--accent);
+  background: linear-gradient(135deg, var(--secondary) 0%, var(--primary) 100%);
   color: white;
   border: none;
-  padding: 10px 16px;
-  border-radius: 10px;
-  box-shadow: none;
-}
-.stButton>button:hover {
-  filter: brightness(1.02);
-  transform: translateY(-1px);
-}
-
-/* Small muted text */
-.muted {
-  color: var(--muted);
-  font-size: 0.9rem;
-}
-
-/* Card title */
-.card-title {
+  padding: 0.5rem 1.5rem;
+  border-radius: 8px;
   font-weight: 600;
-  font-size: 1rem;
-  margin-bottom: 6px;
+  transition: transform 0.2s;
 }
 
-/* Responsive adjustments */
-@media (max-width: 640px) {
-  .card { padding: 12px; }
-  .header h1 { font-size: 1.1rem; }
+.stButton>button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
 }
+</style>
 """
 
-st.markdown(f"<style>{CSS}</style>", unsafe_allow_html=True)
+st.markdown(CSS, unsafe_allow_html=True)
 
-# -----------------------
-# Sample / placeholder data generation
-# -----------------------
-@st.cache_data(show_spinner=False)
-def load_sample_data(days: int = 90):
-    """Generates sample time-series air quality data."""
-    rng = pd.date_range(end=datetime.now(), periods=days, freq="D")
-    np.random.seed(42)
-    base_pm = np.clip(35 + np.random.randn(days).cumsum() * 0.5, 5, 200)
-    temp = 20 + 4 * np.sin(np.linspace(0, 3.14, days)) + np.random.randn(days) * 0.6
-    humidity = np.clip(60 + 5 * np.cos(np.linspace(0, 3.14, days)) + np.random.randn(days) * 2, 10, 100)
-    df = pd.DataFrame({
-        "timestamp": rng,
-        "pm25": base_pm,
-        "temperature": temp,
-        "humidity": humidity,
+# ==================== API Functions ====================
+
+@st.cache_data(ttl=300)  # Cache for 5 minutes
+def fetch_api_data(endpoint: str, params: Optional[Dict] = None) -> Optional[Dict]:
+    """Fetch data from API with error handling."""
+    try:
+        url = f"{API_BASE_URL}{endpoint}"
+        response = requests.get(url, params=params, timeout=API_TIMEOUT)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.ConnectionError:
+        st.error(f"❌ Cannot connect to API at {API_BASE_URL}. Please ensure the API server is running.")
+        return None
+    except requests.exceptions.Timeout:
+        st.error("⏱️ API request timed out. Please try again.")
+        return None
+    except requests.exceptions.RequestException as e:
+        st.error(f"❌ API Error: {str(e)}")
+        return None
+
+def post_api_data(endpoint: str, data: Dict) -> Optional[Dict]:
+    """Post data to API with error handling."""
+    try:
+        url = f"{API_BASE_URL}{endpoint}"
+        response = requests.post(url, json=data, timeout=API_TIMEOUT)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        st.error(f"❌ API Error: {str(e)}")
+        return None
+
+@st.cache_data(ttl=300)
+def get_air_quality_data(limit: int = 1000) -> Optional[pd.DataFrame]:
+    """Get air quality data from API."""
+    data = fetch_api_data("/data", params={"limit": limit})
+    if data and "data" in data:
+        df = pd.DataFrame(data["data"])
+        if "datetime" in df.columns:
+            df["datetime"] = pd.to_datetime(df["datetime"])
+        return df
+    return None
+
+@st.cache_data(ttl=300)
+def get_statistics() -> Optional[Dict]:
+    """Get statistical summary from API."""
+    return fetch_api_data("/stats")
+
+@st.cache_data(ttl=300)
+def get_aqi() -> Optional[Dict]:
+    """Get current AQI from API."""
+    return fetch_api_data("/aqi")
+
+@st.cache_data(ttl=600)
+def get_time_patterns(pollutant: str, analysis_type: str = "comprehensive") -> Optional[Dict]:
+    """Get time-based pattern analysis from API."""
+    return fetch_api_data("/analysis/time-patterns", params={
+        "pollutant": pollutant,
+        "analysis_type": analysis_type
     })
-    # a mock "predicted" column for demo
-    df["pm25_pred"] = df["pm25"].shift(1).fillna(df["pm25"].mean()) + np.random.randn(days) * 1.5
-    return df
 
-data = load_sample_data(120)
+@st.cache_data(ttl=600)
+def get_correlations(analysis_type: str = "comprehensive") -> Optional[Dict]:
+    """Get correlation analysis from API."""
+    return fetch_api_data("/analysis/correlations", params={
+        "analysis_type": analysis_type
+    })
 
+def generate_forecast(pollutant: str, method: str, steps: int = 24, **kwargs) -> Optional[Dict]:
+    """Generate forecast using API."""
+    data = {
+        "pollutant": pollutant,
+        "method": method,
+        "forecast_steps": steps,
+        **kwargs
+    }
+    return post_api_data("/forecast/simple", data)
 
-# -----------------------
-# Utility components
-# -----------------------
-def format_kpi_label(label: str, value, delta=None, unit=""):
-    delta_str = f"{delta:+.1f}" if delta is not None else ""
-    return f"<div class='kpi'><div style='display:flex;justify-content:space-between;align-items:center'>\
-                <div style='font-size:0.9rem;color:var(--muted)'>{label}</div>\
-                <div style='font-weight:600;font-size:1.05rem'>{value}{unit}</div></div>\
-                {'<div class=muted style=\"margin-top:6px\">Change: '+delta_str+'</div>' if delta is not None else ''}</div>"
+# ==================== Visualization Functions ====================
 
-def plot_time_series(df: pd.DataFrame):
+def plot_time_series_multi(df: pd.DataFrame, pollutants: List[str]):
+    """Plot multiple pollutants over time."""
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['pm25'], mode='lines', name='PM2.5', line=dict(color='#2575fc')))
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['pm25_pred'], mode='lines', name='Predicted PM2.5', line=dict(color='#6a11cb', dash='dash')))
+    
+    colors = ['#2575fc', '#6a11cb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6']
+    
+    for i, pollutant in enumerate(pollutants):
+        if pollutant in df.columns:
+            fig.add_trace(go.Scatter(
+                x=df['datetime'],
+                y=df[pollutant],
+                mode='lines',
+                name=pollutant,
+                line=dict(color=colors[i % len(colors)], width=2)
+            ))
+    
     fig.update_layout(
-        margin=dict(l=10, r=10, t=30, b=10),
-        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1),
+        title="Pollutant Levels Over Time",
+        xaxis_title="Date",
+        yaxis_title="Concentration (µg/m³)",
         hovermode='x unified',
-        template='plotly_white'
+        template='plotly_white',
+        height=400,
+        legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1)
     )
+    
     return fig
 
-def plot_distribution(df: pd.DataFrame):
-    fig = px.histogram(df, x="pm25", nbins=30, title="PM2.5 Distribution", color_discrete_sequence=['#2575fc'])
-    fig.update_layout(margin=dict(l=10, r=10, t=40, b=10), template='plotly_white')
+def plot_forecast_with_confidence(forecast_data: Dict):
+    """Plot forecast with confidence intervals."""
+    fig = go.Figure()
+    
+    forecast = forecast_data.get("forecast", [])
+    
+    if isinstance(forecast, dict) and "forecast" in forecast:
+        # Extract forecast values
+        values = forecast["forecast"]
+        x = list(range(len(values)))
+        
+        # Add forecast line
+        fig.add_trace(go.Scatter(
+            x=x,
+            y=values,
+            mode='lines+markers',
+            name='Forecast',
+            line=dict(color='#2575fc', width=3)
+        ))
+        
+        # Add confidence intervals if available
+        if "confidence_lower" in forecast and "confidence_upper" in forecast:
+            fig.add_trace(go.Scatter(
+                x=x + x[::-1],
+                y=forecast["confidence_upper"] + forecast["confidence_lower"][::-1],
+                fill='toself',
+                fillcolor='rgba(37, 117, 252, 0.2)',
+                line=dict(color='rgba(255,255,255,0)'),
+                name='95% Confidence',
+                showlegend=True
+            ))
+    
+    fig.update_layout(
+        title="Forecast with Confidence Intervals",
+        xaxis_title="Hours Ahead",
+        yaxis_title="Predicted Value (µg/m³)",
+        template='plotly_white',
+        height=400
+    )
+    
     return fig
 
-def plot_corr_heatmap(df: pd.DataFrame):
-    corr = df[["pm25", "temperature", "humidity", "pm25_pred"]].corr()
-    fig = px.imshow(corr, text_auto=True, aspect="auto", color_continuous_scale='RdBu_r', origin='lower')
-    fig.update_layout(margin=dict(l=10, r=10, t=30, b=10), template='plotly_white')
-    return fig
+def plot_correlation_heatmap(corr_data: Dict):
+    """Plot correlation heatmap."""
+    if "result" in corr_data and "pollutant_correlations" in corr_data["result"]:
+        corr_matrix = corr_data["result"]["pollutant_correlations"].get("correlation_matrix", {})
+        
+        if corr_matrix:
+            # Convert to DataFrame
+            df_corr = pd.DataFrame(corr_matrix)
+            
+            fig = px.imshow(
+                df_corr,
+                text_auto='.2f',
+                aspect="auto",
+                color_continuous_scale='RdBu_r',
+                color_continuous_midpoint=0,
+                title="Pollutant Correlation Matrix"
+            )
+            
+            fig.update_layout(
+                template='plotly_white',
+                height=500
+            )
+            
+            return fig
+    
+    return None
 
-def feature_importance_mock():
-    features = ["temperature", "humidity", "wind_speed", "traffic_index", "industrial_index"]
-    importance = [0.35, 0.25, 0.15, 0.15, 0.10]
-    fig = px.bar(x=importance, y=features, orientation='h', labels={'x':'Importance','y':'Feature'}, title="Feature importance (mock)")
-    fig.update_layout(margin=dict(l=10, r=10, t=30, b=10), template='plotly_white')
-    return fig
+def plot_daily_patterns(pattern_data: Dict):
+    """Plot daily patterns."""
+    if "result" in pattern_data:
+        result = pattern_data["result"]
+        
+        if isinstance(result, dict) and "individual_analyses" in result:
+            # Get first pollutant's daily analysis
+            for pollutant, analysis in result["individual_analyses"].items():
+                if "daily" in analysis:
+                    daily_stats = analysis["daily"].get("hourly_stats", [])
+                    
+                    if daily_stats:
+                        df = pd.DataFrame(daily_stats)
+                        
+                        fig = go.Figure()
+                        
+                        fig.add_trace(go.Scatter(
+                            x=df['hour'],
+                            y=df['mean'],
+                            mode='lines+markers',
+                            name='Average',
+                            line=dict(color='#2575fc', width=3),
+                            error_y=dict(
+                                type='data',
+                                array=df['std'],
+                                visible=True
+                            )
+                        ))
+                        
+                        fig.update_layout(
+                            title=f"Daily Pattern - {pollutant}",
+                            xaxis_title="Hour of Day",
+                            yaxis_title="Concentration (µg/m³)",
+                            template='plotly_white',
+                            height=400
+                        )
+                        
+                        return fig
+    
+    return None
 
-# -----------------------
-# Page renderers
-# -----------------------
+# ==================== Page Components ====================
+
 def render_header():
-    st.markdown(
-        """
-        <div class="header">
-          <div>
-            <h1>AirSense — Environmental Monitoring</h1>
-            <div class="muted">Clean, minimal, and responsive dashboard for air quality</div>
-          </div>
+    """Render main header."""
+    st.markdown("""
+        <div class="main-header">
+            <h1>🌤️ AirSense - Air Quality Monitoring System</h1>
+            <p>Real-time air quality analysis, forecasting, and environmental monitoring</p>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.markdown("---")
+    """, unsafe_allow_html=True)
 
+def render_aqi_card():
+    """Render current AQI card."""
+    aqi_data = get_aqi()
+    
+    if aqi_data:
+        aqi = aqi_data.get("aqi", 0)
+        level = aqi_data.get("level", "Unknown")
+        health_impact = aqi_data.get("health_impact", "")
+        recommendations = aqi_data.get("recommendations", "")
+        
+        # Determine AQI class
+        if aqi <= 50:
+            aqi_class = "aqi-good"
+            status_class = "status-good"
+        elif aqi <= 100:
+            aqi_class = "aqi-moderate"
+            status_class = "status-moderate"
+        else:
+            aqi_class = "aqi-unhealthy"
+            status_class = "status-unhealthy"
+        
+        st.markdown(f"""
+            <div class="metric-card {aqi_class}">
+                <h3 style="margin-top:0;">Current Air Quality Index</h3>
+                <div style="display:flex;align-items:center;gap:1rem;margin:1rem 0;">
+                    <div style="font-size:3rem;font-weight:700;color:var(--primary);">{aqi}</div>
+                    <div>
+                        <span class="status-badge {status_class}">{level}</span>
+                        <p style="margin:0.5rem 0 0 0;color:var(--text-muted);">{health_impact}</p>
+                    </div>
+                </div>
+                <div class="info-box">
+                    <strong>💡 Recommendation:</strong> {recommendations}
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+    else:
+        st.warning("⚠️ Unable to fetch current AQI. Please check API connection.")
 
-def render_kpis(df: pd.DataFrame):
-    latest = df.iloc[-1]
-    prev = df.iloc[-8:-1].mean()
-    col1, col2, col3, col4 = st.columns([1.5,1.2,1.2,1.2], gap="large")
+def render_statistics_cards():
+    """Render statistics cards."""
+    stats = get_statistics()
+    
+    if stats and "statistics" in stats:
+        pollutant_stats = stats["statistics"]
+        
+        cols = st.columns(len(pollutant_stats))
+        
+        for i, (pollutant, data) in enumerate(pollutant_stats.items()):
+            with cols[i]:
+                st.metric(
+                    label=pollutant,
+                    value=f"{data.get('latest', 0):.1f} µg/m³",
+                    delta=f"{data.get('latest', 0) - data.get('mean', 0):.1f} vs avg"
+                )
+                
+                with st.expander("📊 Details"):
+                    st.write(f"**Mean:** {data.get('mean', 0):.2f}")
+                    st.write(f"**Std Dev:** {data.get('std', 0):.2f}")
+                    st.write(f"**Min:** {data.get('min', 0):.2f}")
+                    st.write(f"**Max:** {data.get('max', 0):.2f}")
+                    st.write(f"**Median:** {data.get('median', 0):.2f}")
 
-    with col1:
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
-        st.markdown("<div class='card-title'>Key Metrics</div>", unsafe_allow_html=True)
-        kpi_html = format_kpi_label("PM2.5 (current)", f"{latest['pm25']:.1f}", delta=latest['pm25']-prev['pm25'], unit=" µg/m³")
-        st.markdown(kpi_html, unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+# ==================== Main Pages ====================
 
-    with col2:
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
-        st.metric("Temperature", f"{latest['temperature']:.1f} °C", delta=f"{latest['temperature'] - prev['temperature']:.1f} °C")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    with col3:
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
-        st.metric("Humidity", f"{latest['humidity']:.0f} %", delta=f"{latest['humidity'] - prev['humidity']:.0f} %")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    with col4:
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
-        st.metric("Predicted PM2.5", f"{latest['pm25_pred']:.1f} µg/m³", delta=f"{latest['pm25_pred']-latest['pm25']:+.1f}")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-
-def render_chart_cards(df: pd.DataFrame):
-    with st.container():
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
-        st.subheader("Trends")
-        st.markdown("Recent measurements and model predictions", unsafe_allow_html=True)
-        fig = plot_time_series(df)
-        st.plotly_chart(fig, use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
-        col1, col2 = st.columns(2, gap="large")
-        with col1:
-            st.subheader("Distribution")
-            st.plotly_chart(plot_distribution(df), use_container_width=True)
-        with col2:
-            st.subheader("Correlations")
-            st.plotly_chart(plot_corr_heatmap(df), use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-
-def render_dashboard(df: pd.DataFrame):
+def page_dashboard():
+    """Main dashboard page."""
     render_header()
-    render_kpis(df)
-    render_chart_cards(df)
-
-    # Additional insights strip
-    with st.container():
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
-        st.subheader("Quick Insights")
-        cols = st.columns([1,1,1], gap="large")
-        with cols[0]:
-            st.markdown("<div class='card-title'>High pollution days</div>", unsafe_allow_html=True)
-            high_days = (df['pm25'] > 75).sum()
-            st.markdown(f"<div style='font-weight:700;font-size:1.1rem'>{high_days} days</div>", unsafe_allow_html=True)
-            st.markdown("<div class='muted'>Days with PM2.5 &gt; 75 µg/m³ in the period</div>", unsafe_allow_html=True)
-        with cols[1]:
-            st.markdown("<div class='card-title'>Avg PM2.5</div>", unsafe_allow_html=True)
-            st.markdown(f"<div style='font-weight:700;font-size:1.1rem'>{df['pm25'].mean():.1f} µg/m³</div>", unsafe_allow_html=True)
-            st.markdown("<div class='muted'>Mean across selected period</div>", unsafe_allow_html=True)
-        with cols[2]:
-            st.markdown("<div class='card-title'>Most volatile metric</div>", unsafe_allow_html=True)
-            vols = df[["pm25","temperature","humidity"]].std().sort_values(ascending=False)
-            top = vols.index[0]
-            st.markdown(f"<div style='font-weight:700;font-size:1.1rem'>{top}</div>", unsafe_allow_html=True)
-            st.markdown("<div class='muted'>Highest standard deviation</div>", unsafe_allow_html=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-
-def render_predictions(df: pd.DataFrame):
-    st.header("Predictions")
-    st.markdown("Use a simple interactive form to generate short-term predictions (demo).", unsafe_allow_html=True)
-
-    left, right = st.columns([2,1], gap="large")
-    with left:
-        # A scenic quick-predict form
-        with st.form("predict_form"):
-            st.subheader("Model input")
-            input_date = st.date_input("Prediction date", value=(datetime.now() + timedelta(days=1)).date())
-            pm_now = st.number_input("Current PM2.5", value=float(df['pm25'].iloc[-1]), step=0.1, format="%.1f")
-            temp = st.slider("Temperature (°C)", min_value=-10.0, max_value=50.0, value=float(df['temperature'].iloc[-1]))
-            humidity = st.slider("Humidity (%)", min_value=0, max_value=100, value=int(df['humidity'].iloc[-1]))
-            st.markdown("### Advanced")
-            wind = st.slider("Wind speed (m/s)", 0.0, 20.0, 3.2)
-            traffic = st.selectbox("Traffic level", ["Low", "Medium", "High"])
-            submitted = st.form_submit_button("Run prediction")
-            if submitted:
-                # simple mock prediction logic for demo (replace with real model)
-                traffic_factor = {"Low": -2, "Medium": 0, "High": 3}[traffic]
-                pred = pm_now * 0.98 + (temp - 20) * 0.2 + (50 - humidity) * 0.05 + wind * -0.3 + traffic_factor + np.random.randn() * 1.5
-                st.success(f"Predicted PM2.5 for {input_date}: {pred:.1f} µg/m³")
-                st.info("This is a demo prediction. Plug in your ML model to replace the mock logic.")
-    with right:
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
-        st.subheader("Model summary (demo)")
-        st.markdown("- Lightweight linear model (demo)\n- Features: PM2.5 lag, temp, humidity, wind, traffic\n- Last trained: not trained (stub)")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    # Visualize predictions vs. historical
-    st.markdown("<div class='card'>", unsafe_allow_html=True)
-    st.subheader("Recent actual vs. predicted")
-    fig = plot_time_series(df.tail(60))
-    st.plotly_chart(fig, use_container_width=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def render_insights(df: pd.DataFrame):
-    st.header("Insights")
-    st.markdown("Actionable insights and feature analyses", unsafe_allow_html=True)
-    col1, col2 = st.columns([1,1], gap="large")
-
-    with col1:
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
-        st.subheader("Feature importance")
-        st.plotly_chart(feature_importance_mock(), use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
-        st.subheader("Top correlations")
-        corr_df = df[["pm25", "temperature", "humidity"]].corr().unstack().reset_index()
-        corr_df.columns = ["feature_a", "feature_b", "corr"]
-        corr_df = corr_df[corr_df["feature_a"] != corr_df["feature_b"]].drop_duplicates(subset=["corr"])
-        st.dataframe(corr_df.sort_values("corr", ascending=False).head(6).reset_index(drop=True), width=700)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    with col2:
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
-        st.subheader("Seasonality & patterns")
-        # a small seasonal decomposition-like visualization (mock)
-        seasonal = df.copy()
-        seasonal['dayofyear'] = seasonal['timestamp'].dt.dayofyear
-        fig = px.scatter(seasonal, x='dayofyear', y='pm25', color='temperature', title='Daily seasonality (scatter)')
-        fig.update_layout(margin=dict(l=10, r=10, t=30, b=10))
-        st.plotly_chart(fig, use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    st.markdown(
-        "<div class='card'><div class='card-title'>Suggested actions</div>"
-        "<ul><li>Investigate high-pollution clusters on specific dates</li>"
-        "<li>Cross-check sensor locations with traffic/industry data</li>"
-        "<li>Deploy model retraining pipeline for better forecasts</li></ul></div>",
-        unsafe_allow_html=True,
-    )
-
-
-# -----------------------
-# Sidebar - Navigation
-# -----------------------
-with st.sidebar:
-    st.markdown("<div style='padding:8px 8px 12px 8px'>", unsafe_allow_html=True)
-    st.markdown("<h3 style='margin:0'>Navigation</h3>", unsafe_allow_html=True)
-    page = st.radio("", ["Dashboard", "Predictions", "Insights"], index=0)
-    st.markdown("</div>", unsafe_allow_html=True)
+    
+    # AQI Card
+    render_aqi_card()
+    
     st.markdown("---")
-    st.markdown("### Display options")
-    days = st.slider("Days to show", min_value=14, max_value=365, value=120, step=1)
-    st.markdown("### Quick actions")
-    if st.button("Refresh data"):
-        st.experimental_rerun()
+    
+    # Statistics Cards
+    st.subheader("📈 Current Pollutant Levels")
+    render_statistics_cards()
+    
+    st.markdown("---")
+    
+    # Time Series Plot
+    st.subheader("📊 Pollutant Trends")
+    
+    df = get_air_quality_data(limit=500)
+    
+    if df is not None and not df.empty:
+        # Select pollutants to display
+        available_pollutants = [col for col in ['PM2.5', 'PM10', 'NO2', 'SO2', 'CO', 'O3'] if col in df.columns]
+        
+        selected_pollutants = st.multiselect(
+            "Select pollutants to display:",
+            options=available_pollutants,
+            default=available_pollutants[:3] if len(available_pollutants) >= 3 else available_pollutants
+        )
+        
+        if selected_pollutants:
+            fig = plot_time_series_multi(df, selected_pollutants)
+            st.plotly_chart(fig, use_container_width=True)
+        
+        # Data table
+        with st.expander("📋 View Raw Data"):
+            st.dataframe(df.tail(100), use_container_width=True)
+    else:
+        st.info("ℹ️ No data available. Please run the data processing pipeline first.")
 
-# filter data according to days selection
-df = data.tail(days).reset_index(drop=True)
+def page_analysis():
+    """Analysis page with time patterns and correlations."""
+    st.title("🔬 Data Analysis")
+    
+    tab1, tab2 = st.tabs(["⏰ Time Patterns", "🔗 Correlations"])
+    
+    with tab1:
+        st.subheader("Time-Based Pattern Analysis")
+        
+        pollutant = st.selectbox(
+            "Select pollutant:",
+            options=['PM2.5', 'PM10', 'NO2', 'SO2', 'CO', 'O3'],
+            key="time_pollutant"
+        )
+        
+        analysis_type = st.radio(
+            "Analysis type:",
+            options=['daily', 'weekly', 'monthly', 'yearly', 'comprehensive'],
+            horizontal=True
+        )
+        
+        if st.button("🔍 Analyze Patterns"):
+            with st.spinner("Analyzing patterns..."):
+                pattern_data = get_time_patterns(pollutant, analysis_type)
+                
+                if pattern_data:
+                    if analysis_type == 'daily' or analysis_type == 'comprehensive':
+                        fig = plot_daily_patterns(pattern_data)
+                        if fig:
+                            st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Display results
+                    with st.expander("📊 Detailed Results"):
+                        st.json(pattern_data)
+                else:
+                    st.error("Failed to fetch pattern analysis.")
+    
+    with tab2:
+        st.subheader("Correlation Analysis")
+        
+        analysis_type = st.radio(
+            "Analysis type:",
+            options=['pollutants', 'weather', 'comprehensive'],
+            horizontal=True,
+            key="corr_type"
+        )
+        
+        if st.button("🔍 Analyze Correlations"):
+            with st.spinner("Analyzing correlations..."):
+                corr_data = get_correlations(analysis_type)
+                
+                if corr_data:
+                    # Plot heatmap
+                    fig = plot_correlation_heatmap(corr_data)
+                    if fig:
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Display strong correlations
+                    if "result" in corr_data:
+                        result = corr_data["result"]
+                        
+                        if "pollutant_correlations" in result:
+                            strong_corr = result["pollutant_correlations"].get("strong_correlations", [])
+                            
+                            if strong_corr:
+                                st.subheader("🔗 Strong Correlations Found")
+                                
+                                for corr in strong_corr[:10]:  # Top 10
+                                    col1, col2, col3 = st.columns([2, 1, 1])
+                                    
+                                    with col1:
+                                        st.write(f"**{corr['pollutant1']}** ↔ **{corr['pollutant2']}**")
+                                    with col2:
+                                        st.write(f"{corr['correlation']:.3f}")
+                                    with col3:
+                                        st.write(f"{corr['strength']} {corr['direction']}")
+                    
+                    # Detailed results
+                    with st.expander("📊 Detailed Results"):
+                        st.json(corr_data)
+                else:
+                    st.error("Failed to fetch correlation analysis.")
 
-# -----------------------
-# Router
-# -----------------------
-if page == "Dashboard":
-    render_dashboard(df)
-elif page == "Predictions":
-    render_predictions(df)
-elif page == "Insights":
-    render_insights(df)
-else:
-    st.write("Unknown page")
+def page_forecasting():
+    """Forecasting page."""
+    st.title("🔮 Air Quality Forecasting")
+    
+    st.markdown("""
+        Generate forecasts using various methods including simple statistical methods 
+        and advanced machine learning models.
+    """)
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.subheader("Forecast Configuration")
+        
+        pollutant = st.selectbox(
+            "Select pollutant:",
+            options=['PM2.5', 'PM10', 'NO2', 'SO2', 'CO', 'O3']
+        )
+        
+        method = st.selectbox(
+            "Forecasting method:",
+            options=[
+                'moving_average',
+                'weighted_moving_average',
+                'seasonal_naive',
+                'exponential_smoothing',
+                'ensemble'
+            ],
+            format_func=lambda x: x.replace('_', ' ').title()
+        )
+        
+        steps = st.slider("Forecast horizon (hours):", min_value=6, max_value=168, value=24, step=6)
+        
+        # Method-specific parameters
+        if method == 'moving_average' or method == 'weighted_moving_average':
+            window_size = st.slider("Window size:", min_value=6, max_value=72, value=24, step=6)
+        else:
+            window_size = 24
+        
+        if method == 'exponential_smoothing':
+            alpha = st.slider("Smoothing factor (alpha):", min_value=0.1, max_value=0.9, value=0.3, step=0.1)
+        else:
+            alpha = 0.3
+        
+        if st.button("🚀 Generate Forecast", type="primary"):
+            with st.spinner("Generating forecast..."):
+                forecast_data = generate_forecast(
+                    pollutant=pollutant,
+                    method=method,
+                    steps=steps,
+                    window_size=window_size,
+                    alpha=alpha
+                )
+                
+                if forecast_data:
+                    st.success("✅ Forecast generated successfully!")
+                    
+                    # Plot forecast
+                    fig = plot_forecast_with_confidence(forecast_data)
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Display forecast values
+                    with st.expander("📋 Forecast Values"):
+                        if "forecast" in forecast_data:
+                            forecast_values = forecast_data["forecast"]
+                            if isinstance(forecast_values, dict) and "forecast" in forecast_values:
+                                values = forecast_values["forecast"]
+                                df_forecast = pd.DataFrame({
+                                    'Hour': range(1, len(values) + 1),
+                                    'Predicted Value': values
+                                })
+                                st.dataframe(df_forecast, use_container_width=True)
+                else:
+                    st.error("❌ Failed to generate forecast. Please check API connection.")
+    
+    with col2:
+        st.subheader("ℹ️ Method Info")
+        
+        method_info = {
+            'moving_average': "Simple moving average of recent values. Good for stable trends.",
+            'weighted_moving_average': "Recent values have more weight. Better for changing trends.",
+            'seasonal_naive': "Uses values from the same time in previous periods. Good for seasonal data.",
+            'exponential_smoothing': "Exponentially weighted moving average. Balances recent and historical data.",
+            'ensemble': "Combines multiple methods for improved accuracy."
+        }
+        
+        st.info(method_info.get(method, "Select a method to see information."))
+        
+        st.markdown("---")
+        
+        st.subheader("📊 Model Performance")
+        st.write("Forecast accuracy metrics will be displayed here after generating predictions.")
+
+# ==================== Main App ====================
+
+def main():
+    """Main application."""
+    
+    # Sidebar navigation
+    with st.sidebar:
+        st.image("https://via.placeholder.com/150x50/2575fc/ffffff?text=AirSense", use_container_width=True)
+        
+        st.markdown("### 🧭 Navigation")
+        page = st.radio(
+            "",
+            options=["Dashboard", "Analysis", "Forecasting"],
+            label_visibility="collapsed"
+        )
+        
+        st.markdown("---")
+        
+        st.markdown("### ⚙️ Settings")
+        
+        # API status check
+        try:
+            health = requests.get(f"{API_BASE_URL}/health", timeout=5)
+            if health.status_code == 200:
+                st.success("✅ API Connected")
+            else:
+                st.error("❌ API Error")
+        except:
+            st.error("❌ API Offline")
+        
+        st.markdown(f"**API URL:** `{API_BASE_URL}`")
+        
+        st.markdown("---")
+        
+        if st.button("🔄 Refresh Data"):
+            st.cache_data.clear()
+            st.rerun()
+        
+        st.markdown("---")
+        
+        st.markdown("### 📚 Resources")
+        st.markdown("- [API Docs](http://localhost:8000/docs)")
+        st.markdown("- [GitHub](https://github.com)")
+        st.markdown("- [Documentation](./docs)")
+    
+    # Route to pages
+    if page == "Dashboard":
+        page_dashboard()
+    elif page == "Analysis":
+        page_analysis()
+    elif page == "Forecasting":
+        page_forecasting()
+
+if __name__ == "__main__":
+    main()

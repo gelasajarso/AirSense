@@ -1,63 +1,77 @@
 """Main entry point for AirSense system."""
 
-import asyncio
-import sys
 import argparse
+import shutil
+import sys
 from pathlib import Path
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent))
+# Add project root to path so `from src.x import ...` works
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from src.api.main import create_app
 from src.core.config import get_settings
 from src.core.logging import get_logger
-from src.data.processor import SparkDataProcessor
-from src.models import TimeSeriesForecaster
-from src.api.main import create_app
+from src.data.processor import SPARK_AVAILABLE, SparkDataProcessor
+
+
+def _spark_runtime_ready() -> bool:
+    """PySpark needs a Java executable on PATH; otherwise skip Spark and use pandas."""
+    if not SPARK_AVAILABLE:
+        return False
+    return shutil.which("java") is not None
 
 
 def run_pipeline():
-    """Run data processing pipeline."""
+    """Run data processing pipeline (Spark when available, else pandas)."""
+    from datetime import datetime
+
     logger = get_logger(__name__)
     settings = get_settings()
-    
-    try:
-        logger.info("Starting AirSense data pipeline")
-        
-        # Initialize processor
-        processor = SparkDataProcessor()
-        
-        # Find input file
-        input_file = Path(settings.raw_data_dir) / "beijing_demo.csv"
-        if not input_file.exists():
-            alt_input_file = Path(settings.data_dir) / "beijing_demo.csv"
-            if alt_input_file.exists():
-                input_file = alt_input_file
-            else:
-                logger.error(f"Input file not found: {input_file}")
-                return False
 
-        # Generate output path
-        from datetime import datetime
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_path = Path(settings.processed_data_dir) / f"processed_{timestamp}.parquet"
-        
-        # Run pipeline
-        result = processor.process_pipeline(str(input_file), str(output_path))
-        
-        if result["status"] == "success":
-            logger.info("Pipeline completed successfully", **result)
-            return True
+    logger.info("Starting AirSense data pipeline")
+
+    input_file = Path(settings.raw_data_dir) / "beijing_demo.csv"
+    if not input_file.exists():
+        alt_input_file = Path(settings.data_dir) / "beijing_demo.csv"
+        if alt_input_file.exists():
+            input_file = alt_input_file
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_path = Path(settings.processed_data_dir) / f"processed_{timestamp}.parquet"
+
+    if input_file.exists() and SPARK_AVAILABLE and shutil.which("java") is None:
+        logger.info("Skipping Spark: Java not found on PATH; using pandas pipeline.")
+
+    if _spark_runtime_ready() and input_file.exists():
+        processor = None
+        try:
+            processor = SparkDataProcessor()
+            result = processor.process_pipeline(str(input_file), str(output_path))
+            ok = result.get("status") == "success"
+            if ok:
+                logger.info("Spark pipeline completed successfully", **result)
+            else:
+                logger.error("Spark pipeline failed", **result)
+            return ok
+        except Exception as e:
+            logger.warning("Spark pipeline unavailable or failed; using pandas fallback.", error=str(e))
+        finally:
+            if processor is not None:
+                processor.stop()
+
+    from src.data.pandas_processor import run_pandas_pipeline
+
+    try:
+        result = run_pandas_pipeline(str(input_file), str(output_path))
+        ok = result.get("status") == "success"
+        if ok:
+            logger.info("Pandas pipeline completed successfully", **result)
         else:
-            logger.error("Pipeline failed", **result)
-            return False
-            
+            logger.error("Pandas pipeline failed", **result)
+        return ok
     except Exception as e:
-        logger.error(f"Pipeline execution failed: {e}")
+        logger.error(f"Pandas pipeline execution failed: {e}")
         return False
-    
-    finally:
-        if 'processor' in locals():
-            processor.stop()
 
 
 def run_api():
@@ -70,9 +84,8 @@ def run_api():
     logger.info("Starting AirSense API server")
     
     try:
-        app = create_app()
         uvicorn.run(
-            app,
+            create_app(),
             host=settings.api_host,
             port=settings.api_port,
             reload=settings.api_reload,
@@ -193,7 +206,7 @@ def main():
         success = False
     
     # Exit with appropriate code
-    sys.exit(0 if success else 1)
+    sys.exit(0 if success is not False else 1)
 
 
 if __name__ == "__main__":

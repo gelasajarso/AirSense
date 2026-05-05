@@ -1,0 +1,2 @@
+[console_scripts]
+airsense = src.main:main

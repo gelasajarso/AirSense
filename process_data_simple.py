@@ -1,116 +1,52 @@
-"""Simple data processor without Spark - for systems without Java."""
+"""Simple data processor without Spark — for systems without Java.
 
-import pandas as pd
-import numpy as np
-from pathlib import Path
-from datetime import datetime
+Generates processed parquet from the raw CSV, or creates a realistic
+30-day synthetic dataset when the CSV is missing or too small (< 200 rows).
+"""
+
 import sys
+from datetime import datetime
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 
 def process_data_simple():
     """Process data using pandas instead of Spark."""
-    
+
     print("=" * 60)
     print("AirSense Simple Data Processor (No Spark Required)")
     print("=" * 60)
     print()
-    
-    # Input and output paths
-    input_file = Path("data/raw/beijing_demo.csv")
-    output_dir = Path("data/processed")
+
+    from src.data.pandas_processor import run_pandas_pipeline
+
+    input_file = ROOT / "data" / "raw" / "beijing_demo.csv"
+    output_dir = ROOT / "data" / "processed"
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_file = output_dir / f"processed_{timestamp}.parquet"
-    
-    print(f"Input file: {input_file}")
+
+    print(f"Input file : {input_file}")
     print(f"Output file: {output_file}")
     print()
-    
-    if not input_file.exists():
-        print(f"ERROR: Input file not found: {input_file}")
-        return False
-    
-    try:
-        # Read data
-        print("Reading data...")
-        df = pd.read_csv(input_file)
-        print(f"  Loaded {len(df)} rows, {len(df.columns)} columns")
-        print()
-        
-        # Show columns
-        print("Columns:", list(df.columns))
-        print()
-        
-        # Convert datetime
-        print("Processing datetime...")
-        if 'datetime' in df.columns:
-            df['datetime'] = pd.to_datetime(df['datetime'])
-        elif 'date' in df.columns:
-            df['datetime'] = pd.to_datetime(df['date'])
-        else:
-            print("  WARNING: No datetime column found")
-        print()
-        
-        # Handle missing values
-        print("Handling missing values...")
-        missing_before = df.isnull().sum().sum()
-        df = df.fillna(method='ffill').fillna(method='bfill')
-        missing_after = df.isnull().sum().sum()
-        print(f"  Missing values: {missing_before} → {missing_after}")
-        print()
-        
-        # Basic feature engineering
-        print("Creating features...")
-        if 'datetime' in df.columns:
-            df['hour'] = df['datetime'].dt.hour
-            df['day_of_week'] = df['datetime'].dt.dayofweek
-            df['month'] = df['datetime'].dt.month
-            df['is_weekend'] = df['day_of_week'].isin([5, 6]).astype(int)
-            print("  Added time-based features")
-        
-        # Create lag features for pollutants
-        pollutants = ['PM2.5', 'PM10', 'NO2', 'SO2', 'CO', 'O3']
-        for pollutant in pollutants:
-            if pollutant in df.columns:
-                df[f'{pollutant}_lag1'] = df[pollutant].shift(1)
-                df[f'{pollutant}_lag24'] = df[pollutant].shift(24)
-        print("  Added lag features")
-        print()
-        
-        # Remove rows with NaN from lag features
-        df = df.dropna()
-        
-        # Save to parquet
-        print("Saving processed data...")
-        df.to_parquet(output_file, compression='snappy', index=False)
-        print(f"  Saved {len(df)} rows to {output_file}")
-        print()
-        
-        # Summary statistics
-        print("Summary Statistics:")
-        print("-" * 60)
-        for col in pollutants:
-            if col in df.columns:
-                print(f"  {col:10s}: mean={df[col].mean():.2f}, "
-                      f"min={df[col].min():.2f}, max={df[col].max():.2f}")
-        print()
-        
-        print("=" * 60)
-        print("✓ Data processing completed successfully!")
-        print("=" * 60)
-        print()
-        print("You can now run:")
-        print("  - API: .venv\\Scripts\\python.exe src\\main.py api")
-        print("  - Dashboard: .venv\\Scripts\\python.exe src\\main.py dashboard")
-        print()
-        
-        return True
-        
-    except Exception as e:
-        print(f"ERROR: Data processing failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+
+    result = run_pandas_pipeline(str(input_file), str(output_file))
+
+    print()
+    print("=" * 60)
+    print("Data processing completed successfully.")
+    print("=" * 60)
+    print()
+    print("You can now run:")
+    print("  API      : python -m uvicorn src.api.main:app --host 0.0.0.0 --port 8000")
+    print("  Dashboard: python -m streamlit run frontend/dashboard.py --server.port 8501")
+    print()
+
+    return result.get("status") == "success"
 
 
 if __name__ == "__main__":

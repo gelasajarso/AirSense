@@ -27,7 +27,7 @@ class BackendSimulator:
         except Exception as e:
             print(f"Could not load demo data: {e}")
             # Create sample data
-            dates = pd.date_range(start='2024-01-01', periods=100, freq='H')
+            dates = pd.date_range(start='2024-01-01', periods=100, freq='h')
             self.processed_data = pd.DataFrame({
                 'datetime': dates,
                 'PM2.5': np.random.uniform(10, 100, 100),

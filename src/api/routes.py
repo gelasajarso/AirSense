@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 from typing import List, Optional
 
 # Third-party imports
-import numpy as np
 import pandas as pd
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 
@@ -38,7 +37,7 @@ async def get_forecaster(request: Request):
     """Get forecaster from app state."""
     app = request.app
     
-    if not hasattr(app.state, 'forecaster'):
+    if not hasattr(app.state, "forecaster") or app.state.forecaster is None:
         raise HTTPException(status_code=503, detail="Forecaster not initialized")
     
     return app.state.forecaster
@@ -47,8 +46,11 @@ async def get_data_processor(request: Request):
     """Get data processor from app state."""
     app = request.app
     
-    if not hasattr(app.state, 'data_processor'):
-        raise HTTPException(status_code=503, detail="Data processor not initialized")
+    if not hasattr(app.state, "data_processor") or app.state.data_processor is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Data processor not initialized (requires PySpark and Java)",
+        )
     
     return app.state.data_processor
 
@@ -70,7 +72,6 @@ async def get_data(
     end_date: Optional[datetime] = Query(None),
     pollutants: Optional[List[str]] = Query(None),
     validate: bool = Query(False, description="Run data validation"),
-    processor=Depends(get_data_processor),
     validator=Depends(get_validator)
 ):
     """Get air quality data with filtering and optional validation."""
@@ -200,7 +201,7 @@ async def create_forecast(
         forecast_dates = pd.date_range(
             start=last_date + timedelta(hours=1),
             periods=request.steps,
-            freq='H'
+            freq="h"
         )
         
         # Prepare forecast data
@@ -229,7 +230,7 @@ async def create_forecast(
 
 
 @router.get("/aqi", response_model=AQIResponse)
-async def get_aqi(processor=Depends(get_data_processor)):
+async def get_aqi():
     """Get current AQI and health recommendations."""
     try:
         # Get latest data
@@ -277,7 +278,7 @@ async def get_aqi(processor=Depends(get_data_processor)):
 
 
 @router.get("/stats")
-async def get_statistics(processor=Depends(get_data_processor)):
+async def get_statistics():
     """Get data statistics."""
     try:
         # Get latest data
@@ -456,7 +457,6 @@ def _get_recommendations(aqi):
 @router.post("/forecast/simple")
 async def simple_forecast(
     request: dict,
-    processor=Depends(get_data_processor)
 ):
     """Generate simple forecast using moving averages and other basic methods."""
     try:
@@ -468,6 +468,9 @@ async def simple_forecast(
         # Get latest data
         processed_dir = settings.processed_data_dir
         import os
+
+        if not os.path.isdir(processed_dir):
+            raise HTTPException(status_code=404, detail="No processed data available")
         parquet_files = [f for f in os.listdir(processed_dir) if f.endswith('.parquet')]
         if not parquet_files:
             raise HTTPException(status_code=404, detail="No processed data available")

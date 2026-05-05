@@ -1,6 +1,6 @@
 """FastAPI main application for AirSense."""
 
-from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
@@ -28,26 +28,23 @@ async def lifespan(app: FastAPI):
     """Manage application lifecycle."""
     global startup_time, latest_data
     
-    # Startup
     startup_time = time.time()
     logger.info("AirSense API starting up", version=settings.app_version)
-    
+
     try:
-        # Initialize components
-        await initialize_components()
+        await initialize_components(app)
         logger.info("AirSense API startup completed")
-        
-        yield
-        
     except Exception as e:
         logger.error("Failed to initialize AirSense API", error=str(e))
         raise
-    
-    # Shutdown
-    logger.info("AirSense API shutting down")
+
+    try:
+        yield
+    finally:
+        logger.info("AirSense API shutting down")
 
 
-async def initialize_components():
+async def initialize_components(app: FastAPI):
     """Initialize application components."""
     global latest_data
     
@@ -192,66 +189,63 @@ def create_app() -> FastAPI:
             }
         )
     
-    # Include routes
-    app.include_router(router, prefix="/api/v1")
-    
+    # Include routes (no prefix so dashboard /data /stats /aqi calls resolve directly)
+    app.include_router(router)
+
+    @app.get("/health", tags=["Health"])
+    async def health_check():
+        """Comprehensive health check."""
+        try:
+            uptime = time.time() - startup_time if startup_time else 0
+            memory_usage = psutil.Process().memory_info().rss / 1024 / 1024  # MB
+
+            dp = getattr(app.state, "data_processor", None)
+            fc = getattr(app.state, "forecaster", None)
+            components = {
+                "data_processor": dp is not None,
+                "forecaster": fc is not None,
+                "data_available": latest_data is not None,
+            }
+
+            return {
+                "status": "healthy",
+                "timestamp": datetime.now().isoformat(),
+                "version": settings.app_version,
+                "uptime_seconds": uptime,
+                "memory_usage_mb": memory_usage,
+                "components": components,
+                "settings": {
+                    "debug": settings.debug,
+                    "api_host": settings.api_host,
+                    "api_port": settings.api_port,
+                },
+            }
+
+        except Exception as e:
+            logger.error("Health check failed", error=str(e))
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "unhealthy",
+                    "error": str(e),
+                    "timestamp": datetime.now().isoformat(),
+                },
+            )
+
+    @app.get("/", tags=["Root"])
+    async def root():
+        """Root endpoint with API information."""
+        return {
+            "name": "AirSense API",
+            "version": settings.app_version,
+            "description": "Enterprise Air Quality Analysis & Forecasting API",
+            "docs_url": "/docs",
+            "health_url": "/health",
+            "timestamp": datetime.now().isoformat(),
+        }
+
     return app
 
 
-# Create application instance
+# Application instance for `uvicorn src.api.main:app`
 app = create_app()
-
-
-# Health check endpoint
-@app.get("/health", tags=["Health"])
-async def health_check():
-    """Comprehensive health check."""
-    try:
-        uptime = time.time() - startup_time if startup_time else 0
-        memory_usage = psutil.Process().memory_info().rss / 1024 / 1024  # MB
-        
-        # Check component health
-        components = {
-            "data_processor": hasattr(app.state, 'data_processor'),
-            "forecaster": hasattr(app.state, 'forecaster'),
-            "data_available": latest_data is not None
-        }
-        
-        return {
-            "status": "healthy",
-            "timestamp": datetime.now().isoformat(),
-            "version": settings.app_version,
-            "uptime_seconds": uptime,
-            "memory_usage_mb": memory_usage,
-            "components": components,
-            "settings": {
-                "debug": settings.debug,
-                "api_host": settings.api_host,
-                "api_port": settings.api_port
-            }
-        }
-        
-    except Exception as e:
-        logger.error("Health check failed", error=str(e))
-        return JSONResponse(
-            status_code=503,
-            content={
-                "status": "unhealthy",
-                "error": str(e),
-                "timestamp": datetime.now().isoformat()
-            }
-        )
-
-
-# Root endpoint
-@app.get("/", tags=["Root"])
-async def root():
-    """Root endpoint with API information."""
-    return {
-        "name": "AirSense API",
-        "version": settings.app_version,
-        "description": "Enterprise Air Quality Analysis & Forecasting API",
-        "docs_url": "/docs",
-        "health_url": "/health",
-        "timestamp": datetime.now().isoformat()
-    }

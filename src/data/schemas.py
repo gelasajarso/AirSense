@@ -7,14 +7,6 @@ from typing import Any, Dict, List, Optional
 
 # Third-party imports
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from pyspark.sql.types import (
-    DoubleType,
-    StringType,
-    StructField,
-    StructType,
-    TimestampType,
-)
-
 
 # ---------------------------------------------------------------------------
 # Spark Schemas
@@ -24,8 +16,9 @@ class AirQualitySchema:
     """Schema definitions for air quality data."""
 
     @staticmethod
-    def raw_data_schema() -> StructType:
+    def raw_data_schema():
         """Schema for raw input data."""
+        from pyspark.sql.types import DoubleType, StringType, StructField, StructType, TimestampType
         return StructType([
             StructField("datetime", StringType(), True),
             StructField("PM2.5", DoubleType(), True),
@@ -42,8 +35,9 @@ class AirQualitySchema:
         ])
 
     @staticmethod
-    def processed_data_schema() -> StructType:
+    def processed_data_schema():
         """Schema for processed data with engineered features."""
+        from pyspark.sql.types import DoubleType, StringType, StructField, StructType
         base_fields = AirQualitySchema.raw_data_schema().fields
 
         # Add engineered features

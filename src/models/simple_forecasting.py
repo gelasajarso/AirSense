@@ -213,12 +213,13 @@ class SimpleForecaster:
             forecasts.append(es_result["forecast"])
             
             # Simple ensemble (average of all methods)
-            ensemble_forecast = np.mean(forecasts, axis=0).tolist()
+            ensemble_forecast_arr = np.mean(forecasts, axis=0)
+            ensemble_forecast = ensemble_forecast_arr.tolist()
             
             # Calculate ensemble variance for confidence intervals
             forecast_variance = np.var(forecasts, axis=0)
-            confidence_lower = ensemble_forecast - 1.96 * np.sqrt(forecast_variance)
-            confidence_upper = ensemble_forecast + 1.96 * np.sqrt(forecast_variance)
+            confidence_lower = (ensemble_forecast_arr - 1.96 * np.sqrt(forecast_variance)).tolist()
+            confidence_upper = (ensemble_forecast_arr + 1.96 * np.sqrt(forecast_variance)).tolist()
             
             result = {
                 "forecast": ensemble_forecast,
