@@ -17,7 +17,7 @@ def process_data_simple():
     """Process data using pandas instead of Spark."""
 
     print("=" * 60)
-    print("AirSense Simple Data Processor (No Spark Required)")
+    print("AirSense Simple Data Processor ")
     print("=" * 60)
     print()
 

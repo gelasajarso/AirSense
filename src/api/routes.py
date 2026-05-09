@@ -7,13 +7,12 @@ from typing import List, Optional
 
 # Third-party imports
 import pandas as pd
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, UploadFile, File
 
 # Local imports
 from ..core.config import get_settings
 from ..core.exceptions import ModelError, ValidationError
 from ..core.logging import get_logger
-from ..data.correlation_analysis import CorrelationAnalyzer
 from ..data.schemas import (
     AQIResponse,
     DataQueryRequest,
@@ -21,7 +20,6 @@ from ..data.schemas import (
     ForecastResponse,
     PipelineStatus,
 )
-from ..data.time_analysis import TimeBasedAnalyzer
 from ..data.validator import DataValidator
 from ..models.simple_forecasting import SimpleForecaster
 
@@ -63,6 +61,166 @@ async def get_validator(request: Request):
         app.state.validator = DataValidator()
     
     return app.state.validator
+
+
+async def get_optional_data_processor(request: Request):
+    """Get data processor from app state when Spark is available."""
+    return getattr(request.app.state, "data_processor", None)
+
+
+def _get_latest_processed_dataframe() -> tuple[pd.DataFrame, str]:
+    """Load the latest processed parquet file."""
+    processed_dir = settings.processed_data_dir
+
+    if not os.path.exists(processed_dir):
+        raise HTTPException(status_code=404, detail="No processed data available")
+
+    parquet_files = [f for f in os.listdir(processed_dir) if f.endswith(".parquet")]
+    if not parquet_files:
+        raise HTTPException(status_code=404, detail="No processed data available")
+
+    latest_file = sorted(parquet_files)[-1]
+    return pd.read_parquet(os.path.join(processed_dir, latest_file)), latest_file
+
+
+def _correlation_strength(value: float, strong_threshold: float) -> str:
+    return "strong" if abs(value) > strong_threshold else "moderate"
+
+
+def _pandas_pollutant_correlations(df: pd.DataFrame) -> dict:
+    """Calculate pollutant correlations without Spark."""
+    available_pollutants = [col for col in settings.pollutant_columns if col in df.columns]
+
+    if len(available_pollutants) < 2:
+        return {"message": "Need at least 2 pollutants for correlation analysis"}
+
+    corr_df = df[available_pollutants].apply(pd.to_numeric, errors="coerce").corr()
+    correlations = {
+        row: {
+            col: float(value)
+            for col, value in values.items()
+            if pd.notna(value)
+        }
+        for row, values in corr_df.to_dict(orient="index").items()
+    }
+
+    strong_correlations = []
+    for i, pollutant1 in enumerate(available_pollutants):
+        for pollutant2 in available_pollutants[i + 1:]:
+            corr_value = corr_df.loc[pollutant1, pollutant2]
+            if pd.notna(corr_value) and abs(corr_value) > 0.3:
+                corr_value = float(corr_value)
+                strong_correlations.append({
+                    "pollutant1": pollutant1,
+                    "pollutant2": pollutant2,
+                    "correlation": corr_value,
+                    "strength": _correlation_strength(corr_value, 0.7),
+                    "direction": "positive" if corr_value > 0 else "negative",
+                })
+
+    strong_correlations.sort(key=lambda item: abs(item["correlation"]), reverse=True)
+
+    return {
+        "analysis_type": "pollutant_correlations",
+        "pollutants_analyzed": available_pollutants,
+        "correlation_matrix": correlations,
+        "strong_correlations": strong_correlations,
+        "summary": {
+            "total_pairs": len(strong_correlations),
+            "positive_correlations": len([c for c in strong_correlations if c["correlation"] > 0]),
+            "negative_correlations": len([c for c in strong_correlations if c["correlation"] < 0]),
+            "strongest_correlation": strong_correlations[0] if strong_correlations else None,
+        },
+    }
+
+
+def _pandas_weather_pollutant_correlations(df: pd.DataFrame) -> dict:
+    """Calculate weather-pollutant correlations without Spark."""
+    available_weather = [col for col in settings.weather_columns if col in df.columns]
+    available_pollutants = [col for col in settings.pollutant_columns if col in df.columns]
+
+    if not available_weather or not available_pollutants:
+        return {"message": "Insufficient weather or pollutant data for correlation analysis"}
+
+    numeric_df = df[available_pollutants + available_weather].apply(pd.to_numeric, errors="coerce")
+    correlations = {}
+    significant_correlations = []
+
+    for pollutant in available_pollutants:
+        correlations[pollutant] = {}
+        for weather_var in available_weather:
+            corr_value = numeric_df[pollutant].corr(numeric_df[weather_var])
+            if pd.notna(corr_value):
+                corr_value = float(corr_value)
+                correlations[pollutant][weather_var] = corr_value
+                if abs(corr_value) > 0.2:
+                    significant_correlations.append({
+                        "pollutant": pollutant,
+                        "weather_variable": weather_var,
+                        "correlation": corr_value,
+                        "strength": _correlation_strength(corr_value, 0.5),
+                        "direction": "positive" if corr_value > 0 else "negative",
+                    })
+
+    significant_correlations.sort(key=lambda item: abs(item["correlation"]), reverse=True)
+
+    weather_insights = {}
+    for weather_var in available_weather:
+        weather_corrs = [
+            corr for corr in significant_correlations
+            if corr["weather_variable"] == weather_var
+        ]
+        if weather_corrs:
+            weather_insights[weather_var] = {
+                "most_affected_pollutant": max(weather_corrs, key=lambda item: abs(item["correlation"])),
+                "correlation_count": len(weather_corrs),
+                "positive_correlations": len([c for c in weather_corrs if c["correlation"] > 0]),
+                "negative_correlations": len([c for c in weather_corrs if c["correlation"] < 0]),
+            }
+
+    return {
+        "analysis_type": "weather_pollutant_correlations",
+        "weather_variables": available_weather,
+        "pollutants": available_pollutants,
+        "correlation_matrix": correlations,
+        "significant_correlations": significant_correlations,
+        "weather_insights": weather_insights,
+        "summary": {
+            "total_correlations": len(significant_correlations),
+            "strong_correlations": len([
+                c for c in significant_correlations
+                if c["strength"] == "strong"
+            ]),
+            "most_influential_weather": max(
+                weather_insights.items(),
+                key=lambda item: item[1]["correlation_count"],
+            )[0] if weather_insights else None,
+        },
+    }
+
+
+def _pandas_comprehensive_correlations(df: pd.DataFrame) -> dict:
+    pollutant_correlations = _pandas_pollutant_correlations(df)
+    weather_correlations = _pandas_weather_pollutant_correlations(df)
+
+    key_findings = []
+    strongest = pollutant_correlations.get("summary", {}).get("strongest_correlation")
+    if strongest:
+        key_findings.append(
+            f"Strongest correlation: {strongest['pollutant1']} and {strongest['pollutant2']} "
+            f"({strongest['correlation']:.3f}, {strongest['strength']} {strongest['direction']})"
+        )
+
+    most_influential = weather_correlations.get("summary", {}).get("most_influential_weather")
+    if most_influential:
+        key_findings.append(f"Most influential weather factor: {most_influential}")
+
+    return {
+        "analysis_timestamp": pd.Timestamp.now().isoformat(),
+        "pollutant_correlations": pollutant_correlations,
+        "weather_pollutant_correlations": weather_correlations,
+        "summary_insights": {"key_findings": key_findings},
+    }
 
 
 @router.get("/data", response_model=dict)
@@ -523,7 +681,7 @@ async def simple_forecast(
 async def time_patterns_analysis(
     pollutant: str = Query(...),
     analysis_type: str = Query("comprehensive"),
-    processor=Depends(get_data_processor)
+    processor=Depends(get_optional_data_processor)
 ):
     """Analyze time-based patterns for pollutants."""
     try:
@@ -537,25 +695,43 @@ async def time_patterns_analysis(
         latest_file = sorted(parquet_files)[-1]
         df = pd.read_parquet(os.path.join(processed_dir, latest_file))
         
-        # Convert to Spark DataFrame for analysis
-        spark_df = processor.spark.createDataFrame(df)
-        
-        # Initialize analyzer
-        analyzer = TimeBasedAnalyzer(processor.spark)
-        
-        # Perform analysis
-        if analysis_type == "daily":
-            result = analyzer.daily_patterns(spark_df, pollutant)
-        elif analysis_type == "weekly":
-            result = analyzer.weekly_patterns(spark_df, pollutant)
-        elif analysis_type == "monthly":
-            result = analyzer.monthly_patterns(spark_df, pollutant)
-        elif analysis_type == "yearly":
-            result = analyzer.yearly_trends(spark_df, pollutant)
-        elif analysis_type == "comprehensive":
-            result = analyzer.comprehensive_time_analysis(spark_df, [pollutant])
+        # Use simple analyzer (pandas-based) if Spark is not available
+        if processor is None:
+            from ..data.simple_analysis import SimpleAnalyzer
+            analyzer = SimpleAnalyzer()
+            
+            # Perform analysis
+            if analysis_type == "daily":
+                result = analyzer.daily_patterns(df, pollutant)
+            elif analysis_type == "weekly":
+                result = analyzer.weekly_patterns(df, pollutant)
+            elif analysis_type == "monthly":
+                result = analyzer.monthly_patterns(df, pollutant)
+            elif analysis_type == "yearly":
+                result = analyzer.yearly_trends(df, pollutant)
+            elif analysis_type == "comprehensive":
+                result = analyzer.comprehensive_time_analysis(df, [pollutant])
+            else:
+                raise HTTPException(status_code=400, detail=f"Unknown analysis type: {analysis_type}")
         else:
-            raise HTTPException(status_code=400, detail=f"Unknown analysis type: {analysis_type}")
+            # Use Spark-based analyzer
+            spark_df = processor.spark.createDataFrame(df)
+            from ..data.time_analysis import TimeBasedAnalyzer
+            analyzer = TimeBasedAnalyzer(processor.spark)
+            
+            # Perform analysis
+            if analysis_type == "daily":
+                result = analyzer.daily_patterns(spark_df, pollutant)
+            elif analysis_type == "weekly":
+                result = analyzer.weekly_patterns(spark_df, pollutant)
+            elif analysis_type == "monthly":
+                result = analyzer.monthly_patterns(spark_df, pollutant)
+            elif analysis_type == "yearly":
+                result = analyzer.yearly_trends(spark_df, pollutant)
+            elif analysis_type == "comprehensive":
+                result = analyzer.comprehensive_time_analysis(spark_df, [pollutant])
+            else:
+                raise HTTPException(status_code=400, detail=f"Unknown analysis type: {analysis_type}")
         
         return {
             "pollutant": pollutant,
@@ -575,39 +751,49 @@ async def time_patterns_analysis(
 @router.get("/analysis/correlations")
 async def correlation_analysis(
     analysis_type: str = Query("comprehensive"),
-    processor=Depends(get_data_processor)
+    processor=Depends(get_optional_data_processor)
 ):
     """Perform correlation analysis."""
     try:
-        # Get latest data
-        processed_dir = settings.processed_data_dir
-        import os
-        parquet_files = [f for f in os.listdir(processed_dir) if f.endswith('.parquet')]
-        if not parquet_files:
-            raise HTTPException(status_code=404, detail="No processed data available")
-        
-        latest_file = sorted(parquet_files)[-1]
-        df = pd.read_parquet(os.path.join(processed_dir, latest_file))
-        
-        # Convert to Spark DataFrame
-        spark_df = processor.spark.createDataFrame(df)
-        
-        # Initialize analyzer
-        analyzer = CorrelationAnalyzer(processor.spark)
-        
-        # Perform analysis
-        if analysis_type == "pollutants":
-            result = analyzer.pollutant_correlations(spark_df)
-        elif analysis_type == "weather":
-            result = analyzer.weather_pollutant_correlations(spark_df)
-        elif analysis_type == "comprehensive":
-            result = analyzer.comprehensive_correlation_analysis(spark_df)
+        df, latest_file = _get_latest_processed_dataframe()
+
+        if processor is not None:
+            from ..data.correlation_analysis import CorrelationAnalyzer
+
+            spark_df = processor.spark.createDataFrame(df)
+            analyzer = CorrelationAnalyzer(processor.spark)
+
+            if analysis_type == "pollutants":
+                result = {"pollutant_correlations": analyzer.pollutant_correlations(spark_df)}
+            elif analysis_type == "weather":
+                result = {"weather_pollutant_correlations": analyzer.weather_pollutant_correlations(spark_df)}
+            elif analysis_type == "comprehensive":
+                spark_result = analyzer.comprehensive_correlation_analysis(spark_df)
+                result = spark_result.get("comprehensive_analysis", spark_result)
+                if "summary_insights" in spark_result:
+                    result["summary_insights"] = spark_result["summary_insights"]
+            else:
+                raise HTTPException(status_code=400, detail=f"Unknown analysis type: {analysis_type}")
         else:
-            raise HTTPException(status_code=400, detail=f"Unknown analysis type: {analysis_type}")
+            logger.info(
+                "SparkDataProcessor unavailable; using pandas correlation analysis",
+                analysis_type=analysis_type,
+                source_file=latest_file,
+            )
+            if analysis_type == "pollutants":
+                result = {"pollutant_correlations": _pandas_pollutant_correlations(df)}
+            elif analysis_type == "weather":
+                result = {"weather_pollutant_correlations": _pandas_weather_pollutant_correlations(df)}
+            elif analysis_type == "comprehensive":
+                result = _pandas_comprehensive_correlations(df)
+            else:
+                raise HTTPException(status_code=400, detail=f"Unknown analysis type: {analysis_type}")
         
         return {
             "analysis_type": analysis_type,
             "result": result,
+            "source_file": latest_file,
+            "engine": "spark" if processor is not None else "pandas",
             "timestamp": datetime.now().isoformat()
         }
         
@@ -621,7 +807,7 @@ async def correlation_analysis(
 @router.get("/analysis/temporal-correlations")
 async def temporal_correlations(
     pollutant: str = Query(...),
-    processor=Depends(get_data_processor)
+    processor=Depends(get_optional_data_processor)
 ):
     """Analyze temporal correlations for a specific pollutant."""
     try:
@@ -635,14 +821,34 @@ async def temporal_correlations(
         latest_file = sorted(parquet_files)[-1]
         df = pd.read_parquet(os.path.join(processed_dir, latest_file))
         
-        # Convert to Spark DataFrame
-        spark_df = processor.spark.createDataFrame(df)
-        
-        # Initialize analyzer
-        analyzer = CorrelationAnalyzer(processor.spark)
-        
-        # Perform temporal correlation analysis
-        result = analyzer.temporal_correlations(spark_df, pollutant)
+        # Use simple analyzer if Spark is not available
+        if processor is None:
+            # Pandas-based temporal correlation (autocorrelation)
+            if pollutant not in df.columns:
+                raise HTTPException(status_code=400, detail=f"Pollutant {pollutant} not found")
+            
+            ts_data = df[pollutant].dropna()
+            
+            # Calculate autocorrelation for different lags
+            lags = [1, 6, 12, 24, 48, 72, 168]  # 1h, 6h, 12h, 1d, 2d, 3d, 1w
+            autocorr = {}
+            for lag in lags:
+                if len(ts_data) > lag:
+                    autocorr[f"lag_{lag}h"] = float(ts_data.autocorr(lag=lag))
+            
+            result = {
+                "pollutant": pollutant,
+                "autocorrelations": autocorr,
+                "data_points": len(ts_data),
+                "engine": "pandas"
+            }
+        else:
+            # Use Spark-based analyzer
+            spark_df = processor.spark.createDataFrame(df)
+            from ..data.correlation_analysis import CorrelationAnalyzer
+            analyzer = CorrelationAnalyzer(processor.spark)
+            result = analyzer.temporal_correlations(spark_df, pollutant)
+            result["engine"] = "spark"
         
         return {
             "pollutant": pollutant,
@@ -694,3 +900,139 @@ async def validate_data(
     except Exception as e:
         logger.error(f"Data validation failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/upload")
+async def upload_data(
+    file: UploadFile = File(...),
+    process_immediately: bool = Query(True, description="Process the uploaded file immediately"),
+    request: Request = None,
+    background_tasks: BackgroundTasks = None,
+    validator=Depends(get_validator)
+):
+    """Upload air quality data file (CSV format)."""
+    try:
+        if not file:
+            raise HTTPException(status_code=400, detail="No file uploaded")
+        
+        # Check file extension
+        if not file.filename.endswith('.csv'):
+            raise HTTPException(
+                status_code=400, 
+                detail="Only CSV files are supported. Please upload a .csv file"
+            )
+        
+        # Save uploaded file to raw data directory
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"uploaded_{timestamp}.csv"
+        file_path = os.path.join(settings.raw_data_dir, filename)
+        
+        # Ensure raw data directory exists
+        os.makedirs(settings.raw_data_dir, exist_ok=True)
+        
+        # Save file
+        content = await file.read()
+        with open(file_path, 'wb') as f:
+            f.write(content)
+        
+        logger.info(f"File uploaded successfully: {file_path}")
+        
+        # Validate uploaded file
+        try:
+            df = pd.read_csv(file_path)
+            validation_report = validator.validate_dataframe(df)
+            
+            if validation_report["has_critical_issues"]:
+                logger.warning("Uploaded file has critical validation issues", **validation_report)
+                return {
+                    "status": "uploaded_with_warnings",
+                    "message": "File uploaded but has validation issues",
+                    "file_path": file_path,
+                    "filename": filename,
+                    "validation": validation_report,
+                    "timestamp": datetime.now().isoformat()
+                }
+        except Exception as e:
+            logger.error(f"Validation failed for uploaded file: {e}")
+            return {
+                "status": "uploaded_without_validation",
+                "message": "File uploaded but validation failed",
+                "file_path": file_path,
+                "filename": filename,
+                "validation_error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+        
+        # Process immediately if requested
+        if process_immediately and request:
+            # Check if processor is available
+            processor = getattr(request.app.state, "data_processor", None)
+            
+            if processor and background_tasks:
+                # Add processing task to background
+                background_tasks.add_task(_process_uploaded_file, file_path, processor, validator)
+                
+                return {
+                    "status": "uploaded_and_processing",
+                    "message": "File uploaded successfully and processing started",
+                    "file_path": file_path,
+                    "filename": filename,
+                    "validation": validation_report,
+                    "timestamp": datetime.now().isoformat()
+                }
+            else:
+                logger.warning("Data processor not available, file uploaded but not processed")
+                return {
+                    "status": "uploaded_not_processed",
+                    "message": "File uploaded but processor not available (requires PySpark)",
+                    "file_path": file_path,
+                    "filename": filename,
+                    "validation": validation_report,
+                    "timestamp": datetime.now().isoformat()
+                }
+        
+        return {
+            "status": "uploaded",
+            "message": "File uploaded successfully",
+            "file_path": file_path,
+            "filename": filename,
+            "validation": validation_report,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"File upload failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def _process_uploaded_file(file_path: str, processor, validator):
+    """Background task to process uploaded file."""
+    try:
+        logger.info(f"Processing uploaded file: {file_path}")
+        
+        # Generate output path
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = os.path.join(settings.processed_data_dir, f"processed_{timestamp}.parquet")
+        
+        # Run pipeline
+        result = processor.process_pipeline(file_path, output_path)
+        
+        # Validate processed data
+        try:
+            df = pd.read_parquet(output_path)
+            validation_report = validator.validate_dataframe(df)
+            
+            if validation_report["has_critical_issues"]:
+                logger.warning("Processed uploaded file has critical issues", **validation_report)
+            else:
+                logger.info("Uploaded file processed and validated successfully", **validation_report)
+                
+        except Exception as e:
+            logger.error(f"Validation of processed file failed: {e}")
+        
+        logger.info("Uploaded file processing completed", **result)
+        
+    except Exception as e:
+        logger.error(f"Processing uploaded file failed: {e}")

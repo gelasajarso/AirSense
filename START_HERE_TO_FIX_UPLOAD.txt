@@ -1,0 +1,121 @@
+
+╔════════════════════════════════════════════════════════════════════════════╗
+║                                                                            ║
+║                    🔧 FIX THE 404 UPLOAD ERROR 🔧                         ║
+║                                                                            ║
+║                         (Takes 30 seconds)                                 ║
+║                                                                            ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+
+┌────────────────────────────────────────────────────────────────────────────┐
+│  STEP 1: STOP THE API SERVER                                              │
+└────────────────────────────────────────────────────────────────────────────┘
+
+  Find the terminal window that shows:
+  
+      INFO:     Uvicorn running on http://0.0.0.0:8000
+  
+  Press:  Ctrl + C
+  
+  ✓ You should see "Shutting down" message
+
+
+┌────────────────────────────────────────────────────────────────────────────┐
+│  STEP 2: START THE API SERVER AGAIN                                       │
+└────────────────────────────────────────────────────────────────────────────┘
+
+  In the same terminal, type:
+  
+      python -m uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
+  
+  Press: Enter
+  
+  ✓ Wait for "Application startup complete" message
+
+
+┌────────────────────────────────────────────────────────────────────────────┐
+│  STEP 3: VERIFY IT WORKS                                                  │
+└────────────────────────────────────────────────────────────────────────────┘
+
+  Open your browser and go to:
+  
+      http://localhost:8000/docs
+  
+  ✓ Look for "POST /upload" in the list
+  
+  If you see it, you're done! Try uploading again.
+
+
+╔════════════════════════════════════════════════════════════════════════════╗
+║                                                                            ║
+║                    ✅ THAT'S IT! PROBLEM SOLVED! ✅                       ║
+║                                                                            ║
+║              The upload feature will now work correctly.                   ║
+║                                                                            ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                            ALTERNATIVE METHODS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  METHOD A: Use the batch file
+  
+      .\restart_api_for_upload.bat
+  
+  
+  METHOD B: Use the PowerShell script
+  
+      .\restart_api_simple.ps1
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                              TROUBLESHOOTING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  ❓ Can't find the API terminal?
+  
+     1. Open Task Manager (Ctrl+Shift+Esc)
+     2. Find "Python" processes
+     3. End the one using port 8000
+     4. Start API server again
+  
+  
+  ❓ Still getting 404 error?
+  
+     1. Make sure you restarted the API (not the dashboard)
+     2. Check http://localhost:8000/docs shows /upload
+     3. Try uploading again
+  
+  
+  ❓ Port 8000 already in use?
+  
+     Run: netstat -ano | findstr :8000
+     Kill that process or use a different port
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                              MORE INFORMATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  📖 Read detailed guides:
+  
+     - FIX_404_UPLOAD_ERROR.md
+     - RESTART_API_NOW.md
+     - HOW_TO_RESTART_API.txt
+  
+  
+  🧪 Test the endpoint:
+  
+     python test_upload_endpoint.py
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+                    👉 JUST RESTART THE API SERVER 👈
+                    
+                         That's all you need!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
